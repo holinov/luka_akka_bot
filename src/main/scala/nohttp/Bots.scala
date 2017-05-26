@@ -56,23 +56,32 @@ class BotActor extends Actor {
   private val wordWeight = 1
   private val answers = List("Hello", "Hi", "Welcome", "Good morning")
   implicit val ec = context.dispatcher
+  private var clientFutures:Map[String,Future[Any]] = Map.empty
 
   def reply(session: Session, msg: String): Future[(Session, String)] = Future {
     val id = session.id
     val msgScore = msg.split(" ").length * wordWeight
     val newSession = Session(id, msgScore)
+    Thread.sleep(Random.nextInt(500))
     (newSession, answers(Random.nextInt(answers.size))+" in reply to "+msg)
   }
 
   def receive: Receive = {
     case SendMsgInner(s, m) =>
       val server = sender()
-      reply(s, m) onComplete {
-      case scala.util.Success((ss, reply)) =>
-        server ! ReplyMsgInner(ss, reply)
-      case scala.util.Failure(t) =>
-          println("Error: "+t.getMessage)
-    }
+      val oldF = clientFutures.getOrElse(s.id, Future {
+        true
+      })
+
+      val newF = oldF.andThen { case _ =>
+        reply(s, m) onComplete {
+          case scala.util.Success((ss, reply)) =>
+            server ! ReplyMsgInner(ss, reply)
+          case scala.util.Failure(t) =>
+            println("Error: " + t.getMessage)
+        }
+      }
+      clientFutures += (s.id -> newF)
   }
 }
 
@@ -85,10 +94,9 @@ class Server extends Actor {
   def receive: Receive = {
     case SendMsg(id, msg) =>
       implicit val timeout:Timeout = 30.seconds
-      var oldSession:Session = null
-      Server.this.synchronized {
-        oldSession = sessions.getOrElse(id, Session(id, 0))
-      }
+
+      val oldSession:Session = sessions.getOrElse(id, Session(id, 0))
+
       val reply = (botRouter ? SendMsgInner(oldSession, msg)).mapTo[ReplyMsgInner]
       val sen = sender()
       reply onComplete {
